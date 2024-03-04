@@ -1,0 +1,245 @@
+---
+title: "ESM 244 Assignment 3 Task 2"
+author: "Jesse Landesman"
+format: 
+  html:
+    code-fold: true
+    embed-resources: true
+editor: visual
+theme: zephyr
+execute:
+  warning: false
+  error: false
+---
+
+```{r setup}
+library(tidyverse)
+library(nlraa)
+library(Metrics)
+library(cowplot)
+library(janitor)
+library(knitr)
+library(kableExtra)
+library(broom)
+library(tidymodels)
+library(patchwork)
+```
+
+
+# Overview
+
+```{r, fig.align='center', fig.width=15, fig.height=15, fig.cap="Maize and sorghum crops. Image citation: ResearchGate https://www.researchgate.net/figure/Plants-of-maize-and-sorghum_fig2_350565175"}
+knitr::include_graphics('data/grains.jpeg')
+```
+
+## Brief description of the data
+This dataset contains growth or yield data for two species of sorghum and maize under different inputs of irrigation and fertilizer. The low input condition was irrigated every two weeks and added 50 kg N/ha for fertilization and the high input condition was irrigated weekly and added 200 kg N/ha for fertilization. This experiment was conducted in central Greece in 2008.
+The data used in this analysis has the following variables:
+
+-   DOY (Day of the year) - integer - this refers to the day of the year that the sample was collected, starting with day 141 and going through day 303
+
+-   Block - integer - this refers to the block in the experiment design, numbering 1-4
+
+-   Input - integer - this refers to the input level, 1 being low and 2 being high
+
+-   Crop - factor - this refers to the crop type, either F for fiber sorghum, M for maize, or S for sweet sorghum.
+
+-   Yield - numeric - this refers to the biomass yield, in Macrograms per hectare.
+
+**Data Citation:** *Danalatos, N.G., S.V. Archontoulis, and K. Tsiboukas. 2009. Comparative analysis of sorghum versus corn growing under optimum and under water/nitrogen limited conditions in central Greece. In: From research to industry and markets: Proceedings of the 17th European Biomass Conference, Hamburg, Germany. 29 June–3 July 2009. ETA–Renewable Energies, Florence, Italy. p. 538–544.*
+
+**Paper Citation:** *Archontoulis, Sotirios V., and Fernando E. Miguez. "Nonlinear regression models and applications in agricultural research." Agronomy Journal 107.2 (2015): 786-798. (Accessed 2024-02-28).*
+
+## Purpose of this analysis
+In agricultural and soil science, non-linear models are often better at representing the complicated processes that affect yields than linear models. In this analysis, we will analyze how fertilizer impacts yield for the three grain species that are listed in this dataset. The first step in a NLS analysis is to choose candidate models, and for this analysis, we will choose the Beta Function model from the Archontoulis & Fernando paper.
+
+## Pseudocode outline
+* load the nlraa::sm data
+* write a function for the beta function model
+* use ggplot() to plot data to get an idea of starting point guesses
+* filter to keep crops (F, M, S) with high inputs (2)
+* create a table to show NLS parameter values
+* graph fitted mode from model over maize data (M)
+* use 'purrr' to run NLS model for all 24 combination of block, input level, and crop type
+* nest() all data into one dataframe then unnest() before plotting and creating a table
+* find the lowest RMSE using predicted and observed data
+* filter to plot 1 and recreate figure 7 showing biomass for each crop, plotted against day of the year
+
+```{=tex}
+\begin{equation}
+y=y_(max)((1+(t_e-t)/(t_e-t_m))*(t/t_e))^(t_e/(t_e-t_m))
+\end{equation}
+```
+For the Beta Function, the variables mean the following:
+
+-   y is the response variable (ie biomass):
+
+-   ymax is the maximum y value or response variable value
+
+-   t_e is the time when y = ymax
+
+-   t_m is the inflection point at which the growth rate is maximized
+
+```{r}
+# reading in the yields data
+yields <- nlraa::sm
+
+yields_clean <- yields %>% clean_names()
+```
+
+# Modeling the Beta Function
+
+```{r betafunction}
+beta <- function(t, ymax, te, tm) {
+  y <- ymax * (1 + (te - t) / (te - tm)) * (t / te)^(te / (te - tm))
+  return(y)
+}
+```
+
+# Sorghum NLS model
+
+```{r}
+
+# filter data for both types of sorghum
+yields_high <- yields_clean %>% 
+  filter(input == "2") %>% 
+  filter(crop %in% c("S", "F")) %>% 
+  drop_na()
+
+#NLS (hiding the output)
+log <- capture.output({yields_nls <- nls(yield ~ beta(doy,ymax,te,tm),
+                  data = yields_high,
+                  start = list(ymax = 20, te = 260, tm = 225),
+                  trace = TRUE)
+})
+```
+
+```{r}
+coef_summary <- summary(yields_nls)$coefficients
+
+coef_df <- data.frame(
+  Estimate = coef_summary[, "Estimate"],
+  StdError = coef_summary[, "Std. Error"],
+  Statistic = coef_summary[, "t value"],
+  `P-value` = coef_summary[, "Pr(>|t|)"]
+)
+
+row.names(coef_df) <- names(coef(yields_nls))
+
+kable_table <- kable(coef_df, format = "html", digits = 4, caption = " ") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
+  add_header_above(c(" " = 1, "Table 1. Sorghum NLS Model to find initial parameter estimates." = 4)) %>%
+  row_spec(0, bold = TRUE, color = "black", background = "white")
+
+kable_table
+```
+
+```{r}
+#| fig-cap: "Figure 1. Fitted sorghum model on sorghum yield points with high input conditions. The non-linear model shows a good potential fit."
+
+# Generate the sequence of days
+days <- seq(147, 306, by = 1)
+
+# Get predictions from the model
+predicted_values <- predict(yields_nls, newdata=list(doy = days))
+
+# Create a data frame for plotting
+yields_predict <- data.frame(doy = days, yield = predicted_values)
+
+# Now, use df_predict in ggplot
+ggplot() +
+  geom_point(data = yields_high, aes(x = doy, y = yield), color = "black") + 
+  geom_line(data = yields_predict, aes(x = doy, y = yield), color = 'red') +
+  labs(x = 'Day of Year', y = 'Biomass yield (t/ha)')+
+  theme_light()
+```
+
+# NLS on all 24 parameter conditions
+
+```{r}
+all_nls_fcn <- function(df_subset) {
+  nls(yield ~ beta(doy, ymax, te, tm),
+      data = df_subset,
+      start = list(ymax = 52, te = 260, tm = 225))
+}
+
+rmse <- function(predicted, observed) {
+  sqrt(mean((observed - predicted) ^ 2))
+}
+
+yields_nested <- yields_clean %>%
+  group_by(crop, input, block) %>%
+  nest() %>%
+  mutate(nls_model = map(data, ~all_nls_fcn(.x))) %>%
+  mutate(predictions = map2(nls_model, data, ~predict(.x, newdata = .y))) %>%
+  mutate(RMSE = map2_dbl(predictions, data, ~rmse(.x, .y$yield))) %>%
+  mutate(smooth = map(nls_model, ~predict(.x, newdata = tibble(doy = seq(147, 306, by = 1)))))
+
+best_models <- yields_nested %>%
+  group_by(crop) %>%
+  slice_min(order_by = RMSE, n = 1) %>%
+  ungroup()
+
+best_model_summaries <- best_models %>%
+  mutate(parameters = map(nls_model, broom::tidy)) %>%
+  select(crop, RMSE, parameters) %>%
+  unnest(parameters)
+
+best_model_table <- best_model_summaries %>%
+  select(crop, term, estimate, RMSE) %>%
+  pivot_wider(names_from = term, values_from = estimate) %>%
+  arrange(crop)
+
+kable_table <- kable(best_model_table, format = "html", digits = 4, caption = "Table 2. RMSE and Parameters of Best Models for Each Species.") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  column_spec(1, bold = TRUE)
+
+kable_table
+```
+
+```{r}
+#| fig-cap: "Figure 2. Crop yield models for high (left) and low (right) fertilizer inputs for each species."
+unnest_df <- yields_nested %>% 
+  filter(block == 1) %>% 
+  tidyr:: unnest(smooth) %>% 
+  mutate(doy=seq(147,306)) %>% 
+  filter(!(doy>263 & crop =="M"))
+
+hi_filt <- yields_clean %>% 
+  filter(block == 1 &  input ==2)
+
+low_filt <- yields_clean %>% 
+  filter(block == 1 & input ==1)
+
+hi_plot_data <- hi_filt %>%
+  select(crop, doy, yield) %>%
+  bind_rows(unnest_df %>% select(crop, doy, predicted_yield = smooth) %>% filter(input == "2"))
+
+low_plot_data <- low_filt %>%
+  select(crop, doy, yield) %>%
+  bind_rows(unnest_df %>% select(crop, doy, predicted_yield = smooth) %>% filter(input == "1"))
+
+p_hi <- ggplot(hi_plot_data, aes(x = doy, y = yield)) +
+  geom_point(aes(color = crop), size = 3) +
+  geom_line(aes(y = predicted_yield, linetype = crop), linewidth = 1) +
+  scale_color_manual(values = c("F" = "brown", "M" = "gold2", "S" = "springgreen4")) +
+  scale_linetype_manual(values = c("F" = "solid", "M" = "dashed", "S" = "dotted")) +
+  scale_y_continuous(limits = c(0, 50)) + # Set y-axis limits
+  labs(x = 'Day of Year', y = 'Biomass yield (t/ha)')+
+  theme_minimal() +
+  labs(title = "High Input")
+
+
+p_low <- ggplot(low_plot_data, aes(x = doy, y = yield)) +
+  geom_point(aes(color = crop), size = 3) +
+  geom_line(aes(y = predicted_yield, linetype = crop), size = 1) +
+  scale_color_manual(values = c("F" = "brown", "M" = "gold2", "S" = "springgreen4")) +
+ scale_linetype_manual(values = c("F" = "solid", "M" = "dashed", "S" = "dotted")) +
+  scale_y_continuous(limits = c(0, 50)) + # Set y-axis limits
+  labs(x = 'Day of Year', y = 'Biomass yield (t/ha)')+
+  theme_minimal() +
+  labs(title = "Low Input")
+
+ p_hi | p_low
+```
+According to figure 2, the maximum yield of each species is increased by about 10 tonnes per hectare with the increase of irrigation frequency and fertilizer inputs in moving from low to high inputs.

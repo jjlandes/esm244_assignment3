@@ -1,0 +1,283 @@
+---
+title: "ESM 244 Assignment 3 Task 1"
+author: "Jesse Landesman"
+format: 
+  html:
+    code-fold: true
+    embed-resources: true
+theme: flatly
+editor: visual
+execute: 
+  error: false
+  warning: false
+---
+
+```{r setup}
+library(tidymodels)
+library(tidyverse)
+library(here)
+library(ggpubr)
+library(knitr)
+library(broom)
+library(kableExtra)
+```
+
+# Overview
+```{r, fig.align='center', fig.width=15, fig.height=15, fig.cap="Comparing different species of Palmetto Palm plants. Image citation: Outside My Window. https://www.birdsoutsidemywindow.org/2016/02/27/reading-the-palms/"}
+knitr::include_graphics('data/palmetto.jpeg')
+```
+
+## Summary of the dataset:
+This data consists of information on two of the dominant species of palmetto in south-central Florida from 1981 to 2017. The data includes many variables on these plants, including plant ID number, sample year, experimental treatment applied, and site name. However, for this analysis, we are interested in the physical plant features, like plant height, canopy width, canopy length, and number of green leaves, and if these variables can predict species type.
+
+**Citation:** *Abrahamson, W.G. 2019. Survival, growth and biomass estimates of two dominant palmetto species of south-central Florida from 1981 - 2017, ongoing at 5-year intervals ver 1. Environmental Data Initiative. https://doi.org/10.6073/pasta/f2f96ec76fbbd4b9db431c79a770c4d5 (Accessed 2024-02-28).*
+
+## Purpose of analysis:
+The purpose of this analysis is to use binary logistic regression to see if the parameters plant height, canopy length, canopy width, and number of green leaves can accurately predict whether a palmetto plant is species Serenoa reopens or Sabal etonia. We will compare two different models to see which works better. The first model will include all four parameters I mentioned, and the second model will have the same parameters but without canopy length.After selecting a the better of these two models, we will train the model on the entire dataset and see how accurate the model is in predicting the correct species using the given predictor variables.
+
+## Pseudocode:
+* read in the palmetto csv
+* clean the data and select only the variables were are interested in including in our model
+* do some exploratory plots to see if the variables differ between the two species
+* set up the two models and split the data into testing and training data
+* cross validate both models with the training data to see which model has a lower AIC and a larger area under the ROC curve
+* after choosing a model, use this model to train the entire palmetto dataset
+* set up the model to see if it can predict the type of species given the four input variables, using the predict() function
+
+
+```{r fig.align='center', fig.width=8, fig.height=8, fig.cap="Figure 1: Four separate box plots comparing the four predictor variables (canopy length, canopy width, plant height, and numnber of green leaves) between the two species of palmetto."}
+# read in the data
+palmetto <- read_csv(here('data', 'palmetto.csv'))
+
+# change the species to a factor
+# what species is represented by 1? which species is represented by 2?
+# 1 is serenoa repens
+# 2 is sabal etonia
+species_df <- palmetto %>% 
+  mutate(species = factor(species)) %>% 
+  select(species, height, length, width, green_lvs)
+
+### exploratory plots: try height, length, etc.
+# ggplot(species_df, aes(x = height, fill = species)) +
+#   geom_bar()
+
+# ggplot(species_df, aes(x = length, fill = species)) +
+#   geom_histogram()
+
+width_plot <- ggplot(species_df, aes(x = species, y = width, color = species)) +
+  geom_boxplot()+
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank()
+  )+
+  labs(x = ' ', y = 'Canopy width (cm)')+
+  scale_color_manual(values = c('darkgreen', 'purple'),
+                     labels= c('Serenoa reopens', 'Sabal etonia'))
+
+height_plot <- ggplot(species_df, aes(x = species, y = height, color = species)) +
+  geom_boxplot()+
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank()
+  )+
+  labs(x = ' ', y = 'Plant height (cm)')+
+  scale_color_manual(values = c('darkgreen', 'purple'),
+                     labels= c('Serenoa reopens', 'Sabal etonia'))
+
+length_plot <- ggplot(species_df, aes(x = species, y = length, color = species)) +
+  geom_boxplot()+
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank()
+  )+
+  labs(x = ' ', y = 'Canopy length (cm)')+
+   scale_color_manual(values = c('darkgreen', 'purple'),
+                     labels= c('Serenoa reopens', 'Sabal etonia'))
+
+green_lvs_plot <- ggplot(species_df, aes(x = species, y = green_lvs, color = species)) +
+  geom_boxplot()+
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank()
+  )+
+  labs(x = ' ', y = '# of green leaves')+
+   scale_color_manual(values = c('darkgreen', 'purple'),
+                     labels= c('Serenoa reopens', 'Sabal etonia'))
+
+ggarrange(width_plot, length_plot, height_plot, green_lvs_plot, ncol = 2,
+          nrow = 2, common.legend = TRUE, legend = "bottom")
+  
+```
+
+Based on these box plots showing the differences in canopy width, canopy length, plant height, and count of green leaves between Serenoa reopens and Sabal etonia, the predictor variable that is the most different between the two species is the number of green leaves. This variable will likely help to classify species correctly. A second variable that has a clear difference between the two species is canopy length. This means that models that contain both number of green leaves and canopy length will likely perform better than models without these parameters.
+
+# Set up the two models
+```{r}
+f1 <- species ~ height + length + width + green_lvs
+f2 <- species ~ height + width + green_lvs
+
+blr1 <- glm(formula = f1, data = species_df, family = binomial)
+# summary(blr1)
+
+blr2 <- glm(formula = f2, data = species_df, family = binomial)
+# summary(blr2)
+```
+
+
+```{r splitting the data}
+### Check balance of species column
+# species_df %>%
+#   group_by(species) %>%
+#   summarize(n = n()) %>%
+#   ungroup() %>%
+#   mutate(prop = n / sum(n))
+# these groups are pretty balanced; 49.8% and 50.1%
+
+set.seed(123)
+
+# question: since the species are so balanced, do we need to have the 80% part?
+species_split <- initial_split(species_df, prop = 0.99, strata = species)
+  ### stratified on `survived`; training and test splits will both have ~60/40% survived = 0/1
+species_train_df <- training(species_split)
+species_test_df <- testing(species_split)
+```
+
+```{r set up a binary logistic regression model with our data}
+blr_mdl <- logistic_reg() %>%
+  set_engine('glm') ### this is the default - we could try engines from other packages or functions
+
+blr1_fit <- blr_mdl %>%
+  fit(formula = f1, data = species_train_df)
+
+### let's also test this on the other model:
+blr2_fit <- blr_mdl %>%
+  fit(formula = f2, data = species_train_df)
+
+# blr1_fit
+# blr2_fit
+```
+
+# Cross validation of the models
+
+```{r}
+set.seed(10101)
+species_train_folds <- vfold_cv(species_train_df, v = 10)
+# species_train_folds
+```
+
+```{r workflow for first model}
+ blr_mdl <- logistic_reg() %>%
+   set_engine('glm') ### this is the default - we could try engines from other packages or functions
+
+blr1_wf <- workflow() %>%   ### initialize workflow
+  add_model(blr_mdl) %>%
+  add_formula(species ~ height + length + width + green_lvs)
+```
+
+```{r workflow for second model}
+blr2_wf <- workflow() %>%   ### initialize workflow
+  add_model(blr_mdl) %>%
+  add_formula(species ~ height + width + green_lvs)
+```
+
+```{r}
+blr1_fit_folds <- blr1_wf %>%
+  fit_resamples(species_train_folds)
+
+# blr1_fit_folds
+# blr1_fit
+
+### Average the predictive performance of the ten models:
+# collect_metrics(blr1_fit_folds)
+
+blr2_fit_folds <- blr2_wf %>%
+  fit_resamples(species_train_folds)
+
+# blr2_fit_folds
+
+### Average the predictive performance of the ten models:
+# collect_metrics(blr2_fit_folds)
+
+
+```
+After running 10-fold cross validation on both models, we will choose the first model that includes canopy length, width, plant height, and green leaves instead of the second model that drops canopy length. The first model has a higher accuracy for predicting species (91.7%), a lower AIC (5153), and a larger area under the ROC curve (97.2%) than the second model (accuracy = 89.9%, AIC = 5934, area under ROC curve = 96.3%).
+
+
+# Train the selected model (f1) using the entire dataset
+
+```{r}
+species_predict <- species_df %>% 
+  mutate(predict(blr1_fit, new_data = .))
+
+broom::tidy(blr1_fit) %>% 
+  kbl(caption = "Table 1: The binary logistic regression model results from the first model, which contained all four predictor variables, and performed the best with this data.") %>% 
+  kable_minimal()
+# try with other model just to make sure this is better at predicting
+# speciesbad_predict <- species_df %>% 
+#   mutate(predict(blr2_fit, new_data = .))
+```
+
+
+# Evaluate the success of the selected model in classifying a plant as the correct species
+```{r}
+# table(species_predict %>%
+#         select(species, .pred_class)) %>% 
+#   knitr::kable(caption = "Insert caption here")
+
+pred_table <- table(species_predict$species, species_predict$.pred_class)
+
+dimnames(pred_table) <- list("Actual Species" = c("Serenoa", "Sabal"),
+                             "Predicted Species" = c("Serenoa", "Sabal"))
+
+# calculate the percent correctly classified for each species
+correctly_class <- diag(pred_table)
+
+total_species_count <- rowSums(pred_table)
+
+percent_correct <- correctly_class / total_species_count *100
+
+result_table <- cbind(pred_table, "% correctly classified" = percent_correct)
+
+knitr::kable(result_table, caption = "Table 2: This table shows that the selected model was able to predict 5548 Serenoa species, and characterized 564 Serenoa species as Sabal, resulting in a 90.8% accuracy rate for this species. The model also correctly characterized 5702 Sabal species, but characterized 453 Sabal species as Serenoa, resulting in a 92.6% accuracy rate for predicting this species.")
+
+# table(speciesbad_predict %>% 
+#         select(species, .pred_class))
+```
+
+Overall, the model performed well, with an average accuracy of 91.7% across both species of Palmetto plants. There were still some plants that were misidentified by the model, but this model was more accurate than the model that did not include canopy length as a predictor variable.
+
+```{r}
+# accuracy(species_predict, truth = species, estimate = .pred_class)
+# accuracy(speciesbad_predict, truth = species, estimate = .pred_class)
+```
+
+```{r deciding which model is better using area under curve}
+# roc_df <- roc_curve(species_test_predict, truth = species, .pred_1)
+# autoplot(roc_df)
+
+### how about our garbage model?
+# blr2_test_df <- species_test_df %>%
+#   mutate(predict(blr2_fit, new_data = ., type = 'prob')) 
+
+# blr2_roc_df <- blr2_test_df %>%
+#   roc_curve(truth = species, .pred_1) 
+
+# autoplot(blr2_roc_df)
+
+### Calculate area under curve - 50% is random guessing, 100% is perfect classifier
+# yardstick::roc_auc(species_test_predict, truth = species, .pred_1)
+# yardstick::roc_auc(blr2_test_df, truth = species, .pred_1)
+
+# the first model that includes all the variables predicts more, 96% instead of 95%
+```
+
+
+
+
+
+
+
